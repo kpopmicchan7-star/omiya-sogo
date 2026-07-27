@@ -166,6 +166,18 @@ export default function App() {
           createdAt: Date.now(),
         });
       }
+
+      // 直接入力された売り場を、そのフロアの売り場リストへ自動追加
+      const typed = shopManual.trim();
+      if (typed && !(shops[floor] || []).includes(typed)) {
+        try {
+          const updatedShops = { ...shops, [floor]: [...(shops[floor] || []), typed] };
+          await setDoc(doc(db, SHOPS_DOC_PATH[0], SHOPS_DOC_PATH[1]), { byFloor: updatedShops });
+        } catch (e2) {
+          console.error("売り場リストへの自動追加に失敗しました", e2);
+        }
+      }
+
       resetForm();
       setSaved(true);
       setTimeout(() => setSaved(false), 1500);
