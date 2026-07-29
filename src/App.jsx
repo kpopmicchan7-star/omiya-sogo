@@ -11,6 +11,7 @@ import {
   addDoc,
   updateDoc,
   deleteDoc,
+  getDocs,
 } from "firebase/firestore";
 
 const FLOORS = ["B1", "1F", "2F", "3F", "4F", "5F", "6F", "7F", "8F", "9F", "10F", "11F", "12F", "13F"];
@@ -133,6 +134,41 @@ function vibrate() {
   }
 }
 
+// ===== プッシュ通知（アプリを閉じていても届く通知）=====
+
+const PUSH_SUBS_COLLECTION = "pushSubs";
+
+// VAPID公開鍵（公開して問題ない鍵です。秘密鍵はVercelの環境変数側にあります）
+const VAPID_PUBLIC_KEY = "BEkC-ReLuA_JBVDgJKng4jr6XOcOCpCQgYpRqJjCq9hbt2jGIJxfFgf46Vmow4zdVTMIYkKusruUcX-MG_GZ1rM";
+
+function urlBase64ToUint8Array(base64String) {
+  const padding = "=".repeat((4 - (base64String.length % 4)) % 4);
+  const base64 = (base64String + padding).replace(/-/g, "+").replace(/_/g, "/");
+  const raw = window.atob(base64);
+  const output = new Uint8Array(raw.length);
+  for (let i = 0; i < raw.length; i += 1) output[i] = raw.charCodeAt(i);
+  return output;
+}
+
+const isIOS = /iPad|iPhone|iPod/.test(navigator.userAgent || "");
+
+// ホーム画面アプリとして起動しているか（iPhoneはこれが必須条件）
+function isStandalone() {
+  try {
+    return window.navigator.standalone === true
+      || window.matchMedia("(display-mode: standalone)").matches;
+  } catch {
+    return false;
+  }
+}
+
+function pushSupported() {
+  return typeof window !== "undefined"
+    && "serviceWorker" in navigator
+    && "PushManager" in window
+    && "Notification" in window;
+}
+
 export default function App() {
   const [loading, setLoading] = useState(true);
   const [connError, setConnError] = useState(false);
@@ -162,6 +198,135 @@ export default function App() {
   const firstLoadRef = useRef(true);                  // 初回読込では鳴らさない
   const soundOnRef = useRef(soundOn);
   useEffect(() => { soundOnRef.current = soundOn; }, [soundOn]);
+
+  // プッシュ通知
+  const [pushState, setPushState] = useState("checking"); // checking|unsupported|need-install|denied|off|on
+  const [pushBusy, setPushBusy] = useState(false);
+  const [pushMsg, setPushMsg] = useState("");
+  const swRegRef = useRef(null);
+
+  // Service Workerの登録と、現在の通知状態の判定
+  useEffect(() => {
+    (async () => {
+      if (!pushSupported()) {
+        setPushState(isIOS && !isStandalone() ? "need-install" : "unsupported");
+        return;
+      }
+      try {
+        const reg = await navigator.serviceWorker.register("/sw.js");
+        swRegRef.current = reg;
+        await navigator.serviceWorker.ready;
+
+        if (isIOS && !isStandalone()) {
+          setPushState("need-install");
+          return;
+        }
+        if (Notification.permission === "denied") {
+          setPushState("denied");
+          return;
+        }
+        const sub = await reg.pushManager.getSubscription();
+        setPushState(sub && Notification.permission === "granted" ? "on" : "off");
+      } catch (e) {
+        console.error("Service Workerの登録に失敗", e);
+        setPushState("unsupported");
+      }
+    })();
+  }, []);
+
+  // この端末で通知を受け取れるようにする
+  const enablePush = async () => {
+    setPushBusy(true);
+    setPushMsg("");
+    try {
+      const permission = await Notification.requestPermission();
+      if (permission !== "granted") {
+        setPushState(permission === "denied" ? "denied" : "off");
+        setPushMsg("通知が許可されませんでした。");
+        return;
+      }
+
+      const reg = swRegRef.current || (await navigator.serviceWorker.ready);
+      let sub = await reg.pushManager.getSubscription();
+      if (!sub) {
+        sub = await reg.pushManager.subscribe({
+          userVisibleOnly: true,
+          applicationServerKey: urlBase64ToUint8Array(VAPID_PUBLIC_KEY),
+        });
+      }
+
+      await setDoc(doc(db, PUSH_SUBS_COLLECTION, DEVICE_ID), {
+        subscription: JSON.parse(JSON.stringify(sub)),
+        updatedAt: Date.now(),
+      });
+
+      setPushState("on");
+      setPushMsg("この端末で通知を受け取れるようになりました。");
+    } catch (e) {
+      console.error("通知の登録に失敗", e);
+      setPushMsg("通知の登録に失敗しました。時間をおいて試してください。");
+    } finally {
+      setPushBusy(false);
+    }
+  };
+
+  // この端末の通知を止める
+  const disablePush = async () => {
+    setPushBusy(true);
+    setPushMsg("");
+    try {
+      const reg = swRegRef.current || (await navigator.serviceWorker.ready);
+      const sub = await reg.pushManager.getSubscription();
+      if (sub) await sub.unsubscribe();
+      await deleteDoc(doc(db, PUSH_SUBS_COLLECTION, DEVICE_ID)).catch(() => {});
+      setPushState("off");
+      setPushMsg("この端末への通知を止めました。");
+    } catch (e) {
+      console.error("通知の解除に失敗", e);
+    } finally {
+      setPushBusy(false);
+    }
+  };
+
+  // 他の端末へプッシュ通知を送る（自分の端末は除く）
+  const sendPush = async (rec) => {
+    try {
+      const snap = await getDocs(collection(db, PUSH_SUBS_COLLECTION));
+      const targets = snap.docs
+        .filter(d => d.id !== DEVICE_ID)
+        .map(d => ({ id: d.id, subscription: d.data().subscription }))
+        .filter(t => t.subscription);
+
+      if (targets.length === 0) return;
+
+      const counts = rec.vendor === "浪速"
+        ? [rec.boxCount > 0 ? `箱${rec.boxCount}` : null,
+           rec.hangerCount > 0 ? `ハンガー${rec.hangerCount}` : null].filter(Boolean).join(" / ")
+        : `${rec.sagawaCount}個`;
+
+      const res = await fetch("/api/notify", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          targets,
+          title: `📦 ${rec.floor} ${rec.shopName}`,
+          body: `${rec.vendor}　${counts}${rec.note ? `　${rec.note}` : ""}`,
+          url: "/",
+        }),
+      });
+
+      const data = await res.json().catch(() => ({}));
+      // 無効になった購読は削除しておく
+      if (Array.isArray(data.expired)) {
+        await Promise.all(
+          data.expired.map(id => deleteDoc(doc(db, PUSH_SUBS_COLLECTION, id)).catch(() => {}))
+        );
+      }
+    } catch (e) {
+      console.error("プッシュ通知の送信に失敗", e);
+      // 通知が飛ばなくても登録自体は成功しているので、ここでは何もしない
+    }
+  };
 
   const isNaniva = vendor === "浪速";
   const todayKey = getDateKey();
@@ -262,6 +427,8 @@ export default function App() {
           createdAt: Date.now(),
           deviceId: DEVICE_ID,
         });
+        // 他の端末へプッシュ通知（新規登録のときだけ）
+        sendPush(entry);
       }
 
       // 直接入力された売り場を、そのフロアの売り場リストへ自動追加
@@ -650,6 +817,63 @@ export default function App() {
 
       {/* ===== 設定 ===== */}
       {view === "settings" && (
+        <>
+        {/* プッシュ通知の設定 */}
+        <div style={s.card}>
+          <div style={s.settingsTitle}>🔔 通知の設定（この端末）</div>
+
+          {pushState === "on" && (
+            <>
+              <div style={s.pushStatusOn}>✅ 通知オン｜アプリを閉じていても届きます</div>
+              <button style={s.pushOffBtn} onClick={disablePush} disabled={pushBusy}>
+                {pushBusy ? "処理中…" : "この端末の通知を止める"}
+              </button>
+            </>
+          )}
+
+          {pushState === "off" && (
+            <>
+              <div style={s.hint2}>ボタンを押すと、他の人が集荷を登録したときにスマホへ通知が届きます。</div>
+              <button style={s.pushOnBtn} onClick={enablePush} disabled={pushBusy}>
+                {pushBusy ? "登録中…" : "🔔 この端末で通知を受け取る"}
+              </button>
+            </>
+          )}
+
+          {pushState === "need-install" && (
+            <div style={s.pushGuide}>
+              <div style={s.pushGuideTitle}>📲 先にホーム画面に追加してください</div>
+              <div style={s.pushGuideBody}>
+                iPhoneは、ホーム画面のアイコンから開いたときだけ通知を使えます。
+                <br /><br />
+                1. このページを <b>Safari</b> で開く<br />
+                2. 下の <b>共有ボタン（⬆️）</b> をタップ<br />
+                3. <b>「ホーム画面に追加」</b> をタップ<br />
+                4. 追加されたアイコンから開き直す<br />
+                5. この設定画面に戻ってボタンを押す
+              </div>
+            </div>
+          )}
+
+          {pushState === "denied" && (
+            <div style={s.pushGuide}>
+              <div style={s.pushGuideTitle}>🔕 通知がブロックされています</div>
+              <div style={s.pushGuideBody}>
+                端末の「設定」アプリから、このアプリの通知を許可に変更してください。
+              </div>
+            </div>
+          )}
+
+          {pushState === "unsupported" && (
+            <div style={s.hint}>この端末・ブラウザでは通知に対応していません。</div>
+          )}
+
+          {pushState === "checking" && <div style={s.hint}>確認中…</div>}
+
+          {pushMsg && <div style={s.pushMsg}>{pushMsg}</div>}
+        </div>
+
+        {/* 売り場の設定 */}
         <div style={s.card}>
           <div style={s.settingsTitle}>🏢 フロア別 売り場の設定</div>
           <div style={s.hint2}>階を選んで売り場を追加・削除できます（チーム全員にすぐ反映されます）</div>
@@ -693,6 +917,7 @@ export default function App() {
             )
           }
         </div>
+        </>
       )}
     </div>
   );
@@ -882,6 +1107,28 @@ const s = {
   },
   empty: { textAlign: "center", color: "#A0AEC0", marginTop: 60, fontSize: 15 },
   settingsTitle: { fontSize: 15, fontWeight: 700, color: "#1A3A5C", marginBottom: 2 },
+
+  // 通知設定
+  pushStatusOn: {
+    background: "#F0FFF4", color: "#276749", border: "1.5px solid #C6F6D5",
+    borderRadius: 8, padding: "10px 12px", fontSize: 13, fontWeight: 700, margin: "8px 0 10px",
+  },
+  pushOnBtn: {
+    width: "100%", background: "#276749", color: "#fff", border: "none",
+    borderRadius: 10, padding: "13px 0", fontSize: 15, fontWeight: 700,
+    cursor: "pointer", marginTop: 10,
+  },
+  pushOffBtn: {
+    width: "100%", background: "none", color: "#718096", border: "1px solid #CBD5E0",
+    borderRadius: 10, padding: "10px 0", fontSize: 13, cursor: "pointer",
+  },
+  pushGuide: {
+    background: "#FFFAF0", border: "1.5px solid #FBD38D",
+    borderRadius: 8, padding: "12px 14px", marginTop: 10,
+  },
+  pushGuideTitle: { fontSize: 14, fontWeight: 700, color: "#C05621", marginBottom: 6 },
+  pushGuideBody: { fontSize: 13, color: "#744210", lineHeight: 1.8 },
+  pushMsg: { fontSize: 12, color: "#2B6CB0", marginTop: 10 },
   addRow: { display: "flex", gap: 8, alignItems: "center" },
   addBtn: {
     background: "#1A3A5C", color: "#fff", border: "none", borderRadius: 8,
