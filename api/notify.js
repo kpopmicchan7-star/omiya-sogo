@@ -10,23 +10,16 @@ export default async function handler(req, res) {
   const privateKey = (process.env.VAPID_PRIVATE_KEY || "").trim();
   const subject = (process.env.VAPID_SUBJECT || "mailto:pickup@example.com").trim();
 
-  const info = {
-    subject,
-    publicKeyChars: publicKey.length,
-    privateKeyChars: privateKey.length,
-    publicKeyBytes: publicKey ? Buffer.from(publicKey, "base64url").length : 0,
-    privateKeyBytes: privateKey ? Buffer.from(privateKey, "base64url").length : 0,
-  };
-
   if (!publicKey || !privateKey) {
-    res.status(500).json({ error: "VAPIDキーが未設定です", info });
+    res.status(500).json({ error: "VAPIDキーが未設定です" });
     return;
   }
 
   try {
     webpush.setVapidDetails(subject, publicKey, privateKey);
   } catch (e) {
-    res.status(500).json({ error: "鍵の設定に失敗", detail: String(e && e.message), info });
+    console.error("鍵の設定に失敗", e);
+    res.status(500).json({ error: "鍵の設定に失敗しました" });
     return;
   }
 
@@ -34,7 +27,7 @@ export default async function handler(req, res) {
     const { targets, title, body, url } = req.body || {};
 
     if (!Array.isArray(targets) || targets.length === 0) {
-      res.status(200).json({ sent: 0, expired: [], info });
+      res.status(200).json({ sent: 0, expired: [] });
       return;
     }
 
@@ -52,7 +45,6 @@ export default async function handler(req, res) {
     );
 
     const expired = [];
-    const errors = [];
     let sent = 0;
 
     results.forEach((r, i) => {
@@ -63,20 +55,14 @@ export default async function handler(req, res) {
         if (code === 404 || code === 410) {
           expired.push(targets[i].id);
         } else {
-          errors.push({
-            code: code || null,
-            message: String(r.reason && r.reason.message).slice(0, 200),
-          });
+          console.error("送信失敗", code, r.reason && r.reason.message);
         }
       }
     });
 
-    res.status(200).json({ sent, expired, errors, info });
+    res.status(200).json({ sent, expired });
   } catch (e) {
-    res.status(500).json({
-      error: "送信処理でエラー",
-      detail: String(e && e.message).slice(0, 300),
-      info,
-    });
+    console.error("送信処理でエラー", e);
+    res.status(500).json({ error: "送信処理でエラーが発生しました" });
   }
 }
