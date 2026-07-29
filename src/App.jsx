@@ -513,7 +513,10 @@ export default function App() {
 
       {/* ===== 入力 ===== */}
       {view === "form" && (
-        <div style={{ ...s.card, flex: "1 1 auto" }}>
+        <div style={{ ...s.card, flex: "1 1 auto", display: "flex", flexDirection: "column" }}>
+          {/* 余っている高さを上に寄せて、入力欄を下側に下げる */}
+          <div style={{ flex: "1 1 0", minHeight: 0 }} />
+
           {editId !== null && <div style={s.editBanner}>✏️ 編集中</div>}
 
           <div style={s.field}>
