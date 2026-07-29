@@ -1,4 +1,4 @@
-import { useState, useEffect } from "react";
+import { useState, useEffect, useRef } from "react";
 import { initializeApp } from "firebase/app";
 import {
   getFirestore,
@@ -65,6 +65,74 @@ function getDateKey() {
   return `${now.getFullYear()}-${String(now.getMonth()+1).padStart(2,"0")}-${String(now.getDate()).padStart(2,"0")}`;
 }
 
+// ===== 通知まわり =====
+
+// この端末を識別するID（自分の登録では通知を鳴らさないため）
+const DEVICE_ID = (() => {
+  try {
+    let id = localStorage.getItem("pickup-device-id");
+    if (!id) {
+      id = Math.random().toString(36).slice(2) + Date.now().toString(36);
+      localStorage.setItem("pickup-device-id", id);
+    }
+    return id;
+  } catch {
+    return "device-" + Math.random().toString(36).slice(2);
+  }
+})();
+
+// 通知音のON/OFF（端末ごとに記憶）
+function loadSoundPref() {
+  try {
+    return localStorage.getItem("pickup-sound") !== "off";
+  } catch {
+    return true;
+  }
+}
+function saveSoundPref(on) {
+  try {
+    localStorage.setItem("pickup-sound", on ? "on" : "off");
+  } catch {
+    // 保存できなくても動作に支障なし
+  }
+}
+
+// 通知音（ポーン、ポーン）
+let audioCtx = null;
+function playBeep() {
+  try {
+    const Ctx = window.AudioContext || window.webkitAudioContext;
+    if (!Ctx) return;
+    if (!audioCtx) audioCtx = new Ctx();
+    if (audioCtx.state === "suspended") audioCtx.resume();
+    [0, 0.18].forEach((offset, i) => {
+      const t = audioCtx.currentTime + offset;
+      const osc = audioCtx.createOscillator();
+      const gain = audioCtx.createGain();
+      osc.connect(gain);
+      gain.connect(audioCtx.destination);
+      osc.type = "sine";
+      osc.frequency.value = i === 0 ? 880 : 1175;
+      gain.gain.setValueAtTime(0.0001, t);
+      gain.gain.exponentialRampToValueAtTime(0.25, t + 0.01);
+      gain.gain.exponentialRampToValueAtTime(0.0001, t + 0.16);
+      osc.start(t);
+      osc.stop(t + 0.17);
+    });
+  } catch {
+    // 音が鳴らない環境でも画面表示だけは行う
+  }
+}
+
+// バイブ（対応端末のみ。iPhoneは非対応）
+function vibrate() {
+  try {
+    if (navigator.vibrate) navigator.vibrate([80, 60, 80]);
+  } catch {
+    // 非対応端末は無視
+  }
+}
+
 export default function App() {
   const [loading, setLoading] = useState(true);
   const [connError, setConnError] = useState(false);
@@ -87,6 +155,13 @@ export default function App() {
   const [records, setRecords] = useState([]);
   const [saved, setSaved] = useState(false);
   const [editId, setEditId] = useState(null);
+
+  // 通知
+  const [toast, setToast] = useState(null);          // 新着バナーの内容
+  const [soundOn, setSoundOn] = useState(loadSoundPref());
+  const firstLoadRef = useRef(true);                  // 初回読込では鳴らさない
+  const soundOnRef = useRef(soundOn);
+  useEffect(() => { soundOnRef.current = soundOn; }, [soundOn]);
 
   const isNaniva = vendor === "浪速";
   const todayKey = getDateKey();
@@ -114,6 +189,20 @@ export default function App() {
       const list = snap.docs.map(d => ({ id: d.id, ...d.data() }));
       list.sort((a, b) => (a.createdAt || 0) - (b.createdAt || 0));
       setRecords(list);
+
+      // 他の人が登録した新着だけを通知（初回読込と自分の登録は除く）
+      if (!firstLoadRef.current) {
+        const added = snap.docChanges()
+          .filter(c => c.type === "added")
+          .map(c => c.doc.data())
+          .filter(d => d.deviceId !== DEVICE_ID);
+        if (added.length > 0) {
+          const latest = added[added.length - 1];
+          setToast({ rec: latest, extra: added.length - 1 });
+          if (soundOnRef.current) { playBeep(); vibrate(); }
+        }
+      }
+      firstLoadRef.current = false;
       setLoading(false);
     }, (err) => {
       console.error("集荷データの購読エラー", err);
@@ -126,6 +215,13 @@ export default function App() {
       unsubRecords();
     };
   }, []);
+
+  // 新着バナーは数秒で自動的に消す
+  useEffect(() => {
+    if (!toast) return;
+    const timer = setTimeout(() => setToast(null), 6000);
+    return () => clearTimeout(timer);
+  }, [toast]);
 
   const resetForm = () => {
     setFloor(""); setShopName(""); setShopManual("");
@@ -164,6 +260,7 @@ export default function App() {
           date: getDateStr(),
           done: false,
           createdAt: Date.now(),
+          deviceId: DEVICE_ID,
         });
       }
 
@@ -282,11 +379,44 @@ export default function App() {
 
   return (
     <div style={s.root}>
+      {/* 新着通知バナー */}
+      {toast && (
+        <div
+          style={s.toast}
+          onClick={() => { setView("list"); setFilterFloor("ALL"); setToast(null); }}
+        >
+          <div style={s.toastTitle}>
+            🔔 新着{toast.extra > 0 ? `（他${toast.extra}件）` : ""}
+          </div>
+          <div style={s.toastBody}>
+            <span style={s.toastFloor}>{toast.rec.floor}</span>
+            <span style={s.toastShop}>{toast.rec.shopName}</span>
+            <span style={s.toastCount}>
+              {toast.rec.vendor === "浪速"
+                ? [
+                    toast.rec.boxCount > 0 ? `📦${toast.rec.boxCount}` : null,
+                    toast.rec.hangerCount > 0 ? `👔${toast.rec.hangerCount}` : null,
+                  ].filter(Boolean).join(" ")
+                : `📦${toast.rec.sagawaCount}`}
+            </span>
+          </div>
+        </div>
+      )}
+
       {/* ヘッダー */}
       <div style={s.header}>
         <div>
           <div style={s.headerTitle}>📦 集荷受付</div>
-          <div style={s.headerDate}>{getDateStr()}</div>
+          <div style={s.headerSub}>
+            <span style={s.headerDate}>{getDateStr()}</span>
+            <button
+              style={s.bellBtn}
+              onClick={() => { const next = !soundOn; setSoundOn(next); saveSoundPref(next); if (next) playBeep(); }}
+              title={soundOn ? "通知音オン" : "通知音オフ"}
+            >
+              {soundOn ? "🔔 音あり" : "🔕 音なし"}
+            </button>
+          </div>
         </div>
         <div style={s.tabGroup}>
           {[["form","入力"], ["list","一覧"], ["settings","設定"]].map(([v, label]) => (
@@ -585,7 +715,29 @@ const s = {
     display: "flex", justifyContent: "space-between", alignItems: "center", flexWrap: "wrap", gap: 8,
   },
   headerTitle: { fontSize: 18, fontWeight: 700, letterSpacing: 1 },
-  headerDate: { fontSize: 12, color: "#A8C0D6", marginTop: 2 },
+  headerSub: { display: "flex", alignItems: "center", gap: 8, marginTop: 3 },
+  headerDate: { fontSize: 12, color: "#A8C0D6" },
+  bellBtn: {
+    background: "rgba(255,255,255,0.15)", color: "#fff", border: "none",
+    borderRadius: 12, padding: "2px 8px", fontSize: 11, fontWeight: 600, cursor: "pointer",
+  },
+
+  // 新着通知バナー
+  toast: {
+    position: "fixed", top: 8, left: "50%", transform: "translateX(-50%)",
+    width: "calc(100% - 24px)", maxWidth: 476, zIndex: 999,
+    background: "#276749", color: "#fff", borderRadius: 12,
+    padding: "10px 14px", cursor: "pointer",
+    boxShadow: "0 6px 20px rgba(0,0,0,0.28)",
+  },
+  toastTitle: { fontSize: 11, fontWeight: 700, color: "#C6F6D5", marginBottom: 3, letterSpacing: 1 },
+  toastBody: { display: "flex", alignItems: "center", gap: 8 },
+  toastFloor: {
+    background: "rgba(255,255,255,0.22)", borderRadius: 4,
+    padding: "1px 7px", fontSize: 12, fontWeight: 700, flexShrink: 0,
+  },
+  toastShop: { fontSize: 15, fontWeight: 700, flex: 1, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" },
+  toastCount: { fontSize: 14, fontWeight: 700, flexShrink: 0 },
   tabGroup: { display: "flex", gap: 6 },
   tab: {
     background: "rgba(255,255,255,0.15)", color: "#fff", border: "none",
