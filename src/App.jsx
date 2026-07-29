@@ -936,7 +936,8 @@ const s = {
     background: "#F0F4F8", minHeight: "100vh", maxWidth: 500, margin: "0 auto", paddingBottom: 40,
   },
   header: {
-    background: "#1A3A5C", color: "#fff", padding: "14px 16px 10px",
+    background: "#1A3A5C", color: "#fff",
+    padding: "calc(env(safe-area-inset-top, 0px) + 14px) 16px 10px",
     display: "flex", justifyContent: "space-between", alignItems: "center", flexWrap: "wrap", gap: 8,
   },
   headerTitle: { fontSize: 18, fontWeight: 700, letterSpacing: 1 },
@@ -949,7 +950,8 @@ const s = {
 
   // 新着通知バナー
   toast: {
-    position: "fixed", top: 8, left: "50%", transform: "translateX(-50%)",
+    position: "fixed", top: "calc(env(safe-area-inset-top, 0px) + 8px)",
+    left: "50%", transform: "translateX(-50%)",
     width: "calc(100% - 24px)", maxWidth: 476, zIndex: 999,
     background: "#276749", color: "#fff", borderRadius: 12,
     padding: "10px 14px", cursor: "pointer",
