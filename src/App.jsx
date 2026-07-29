@@ -269,6 +269,47 @@ export default function App() {
     }
   };
 
+  // ===== 一時的なテスト送信（原因調査用）=====
+  const [testBusy, setTestBusy] = useState(false);
+  const [testLog, setTestLog] = useState("");
+
+  const sendTestPush = async () => {
+    setTestBusy(true);
+    setTestLog("送信中…");
+    try {
+      const snap = await getDocs(collection(db, PUSH_SUBS_COLLECTION));
+      const all = snap.docs.map(d => ({ id: d.id, subscription: d.data().subscription }));
+      const valid = all.filter(t => t.subscription && t.subscription.endpoint);
+
+      let log = `登録端末: ${all.length}台 / 有効: ${valid.length}台\n`;
+      log += `この端末のID: ${DEVICE_ID.slice(0, 8)}…\n`;
+
+      if (valid.length === 0) {
+        setTestLog(log + "→ 送信先がありません。各端末で「通知を受け取る」を押してください。");
+        return;
+      }
+
+      const res = await fetch("/api/notify", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          targets: valid,   // 自分の端末も含める
+          title: "📦 テスト通知",
+          body: "これが見えていれば通知の仕組みは動いています",
+          url: "/",
+        }),
+      });
+
+      const text = await res.text();
+      log += `応答: ${res.status}\n${text}`;
+      setTestLog(log);
+    } catch (e) {
+      setTestLog("失敗: " + (e && e.message ? e.message : String(e)));
+    } finally {
+      setTestBusy(false);
+    }
+  };
+
   const isNaniva = vendor === "浪速";
 
   // 今日の日付キーと、一覧で表示中の日付キー
@@ -823,6 +864,14 @@ export default function App() {
           {pushState === "checking" && <div style={s.hint}>確認中…</div>}
 
           {pushMsg && <div style={s.pushMsg}>{pushMsg}</div>}
+
+          {/* 原因調査用（確認できたら外します） */}
+          <div style={s.testBox}>
+            <button style={s.testBtn} onClick={sendTestPush} disabled={testBusy}>
+              {testBusy ? "送信中…" : "🧪 テスト通知を送る（自分にも届きます）"}
+            </button>
+            {testLog && <pre style={s.testLog}>{testLog}</pre>}
+          </div>
         </div>
 
         {/* 売り場の設定 */}
@@ -1092,6 +1141,18 @@ const s = {
   pushGuideTitle: { fontSize: 14, fontWeight: 700, color: "#C05621", marginBottom: 6 },
   pushGuideBody: { fontSize: 13, color: "#744210", lineHeight: 1.8 },
   pushMsg: { fontSize: 12, color: "#2B6CB0", marginTop: 10 },
+
+  // 調査用のテスト送信
+  testBox: { marginTop: 14, borderTop: "1px dashed #CBD5E0", paddingTop: 12 },
+  testBtn: {
+    width: "100%", background: "#4A5568", color: "#fff", border: "none",
+    borderRadius: 8, padding: "10px 0", fontSize: 13, fontWeight: 700, cursor: "pointer",
+  },
+  testLog: {
+    marginTop: 10, background: "#1A202C", color: "#C6F6D5",
+    borderRadius: 8, padding: "10px 12px", fontSize: 11, lineHeight: 1.6,
+    whiteSpace: "pre-wrap", wordBreak: "break-all", fontFamily: "monospace",
+  },
   addRow: { display: "flex", gap: 8, alignItems: "center" },
   addBtn: {
     background: "#1A3A5C", color: "#fff", border: "none", borderRadius: 8,
