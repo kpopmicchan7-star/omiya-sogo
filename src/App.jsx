@@ -66,6 +66,21 @@ function getDateKey() {
   return `${now.getFullYear()}-${String(now.getMonth()+1).padStart(2,"0")}-${String(now.getDate()).padStart(2,"0")}`;
 }
 
+// "2026-07-29" → "07/29(水)"
+function formatDateKey(key) {
+  const [y, m, d] = key.split("-").map(Number);
+  return new Date(y, m - 1, d)
+    .toLocaleDateString("ja-JP", { month: "2-digit", day: "2-digit", weekday: "short" });
+}
+
+// 日付キーを前後にずらす
+function shiftDateKey(key, days) {
+  const [y, m, d] = key.split("-").map(Number);
+  const dt = new Date(y, m - 1, d);
+  dt.setDate(dt.getDate() + days);
+  return `${dt.getFullYear()}-${String(dt.getMonth()+1).padStart(2,"0")}-${String(dt.getDate()).padStart(2,"0")}`;
+}
+
 // この端末を識別するID（プッシュ通知の宛先管理に使用）
 const DEVICE_ID = (() => {
   try {
@@ -268,12 +283,26 @@ export default function App() {
   };
 
   const isNaniva = vendor === "浪速";
-  const todayKey = getDateKey();
 
-  // Firestore関連の参照をrefに保持（再レンダーで作り直さない）
-  // ===== 起動時：Firestoreのリアルタイム購読を開始 =====
+  // 今日の日付キーと、一覧で表示中の日付キー
+  const [todayKey, setTodayKey] = useState(getDateKey());
+  const [viewDateKey, setViewDateKey] = useState(getDateKey());
+  const isToday = viewDateKey === todayKey;
+
+  // 日付が変わったら自動的に「今日」へ切り替える
   useEffect(() => {
-    // ---- 売り場リスト：リアルタイム購読 ----
+    const timer = setInterval(() => {
+      const nowKey = getDateKey();
+      if (nowKey !== todayKey) {
+        setViewDateKey(prev => (prev === todayKey ? nowKey : prev));
+        setTodayKey(nowKey);
+      }
+    }, 30000);
+    return () => clearInterval(timer);
+  }, [todayKey]);
+
+  // ===== 売り場リスト：リアルタイム購読 =====
+  useEffect(() => {
     const shopsDocRef = doc(db, SHOPS_DOC_PATH[0], SHOPS_DOC_PATH[1]);
     const unsubShops = onSnapshot(shopsDocRef, (snap) => {
       if (snap.exists()) {
@@ -285,10 +314,13 @@ export default function App() {
       console.error("売り場リストの購読エラー", err);
       setConnError(true);
     });
+    return () => unsubShops();
+  }, []);
 
-    // ---- 本日の集荷データ：リアルタイム購読 ----
+  // ===== 表示中の日の集荷データ：リアルタイム購読 =====
+  useEffect(() => {
     const recordsColRef = collection(db, RECORDS_COLLECTION);
-    const q = query(recordsColRef, where("dateKey", "==", todayKey));
+    const q = query(recordsColRef, where("dateKey", "==", viewDateKey));
     const unsubRecords = onSnapshot(q, (snap) => {
       const list = snap.docs.map(d => ({ id: d.id, ...d.data() }));
       list.sort((a, b) => (a.createdAt || 0) - (b.createdAt || 0));
@@ -299,12 +331,14 @@ export default function App() {
       setConnError(true);
       setLoading(false);
     });
+    return () => unsubRecords();
+  }, [viewDateKey]);
 
-    return () => {
-      unsubShops();
-      unsubRecords();
-    };
-  }, []);
+  // 日付を切り替える（絞り込みはリセット）
+  const changeViewDate = (key) => {
+    setViewDateKey(key);
+    setFilterFloor("ALL");
+  };
 
   const resetForm = () => {
     setFloor(""); setShopName(""); setShopManual("");
@@ -329,16 +363,17 @@ export default function App() {
       hangerCount: isNaniva ? (Number(hangerCount) || 0) : 0,
       sagawaCount: !isNaniva ? (Number(sagawaCount) || 0) : 0,
       note,
-      dateKey: todayKey,
     };
 
     try {
       if (editId !== null) {
+        // 編集では日付は変えない
         await updateDoc(doc(db, RECORDS_COLLECTION, editId), entry);
         setEditId(null);
       } else {
         await addDoc(collection(db, RECORDS_COLLECTION), {
           ...entry,
+          dateKey: todayKey,
           time: getTimeStr(),
           date: getDateStr(),
           done: false,
@@ -346,6 +381,8 @@ export default function App() {
         });
         // 他の端末へプッシュ通知（新規登録のときだけ）
         sendPush(entry);
+        // 過去の日を見ていた場合でも、今日の一覧に戻す
+        if (viewDateKey !== todayKey) changeViewDate(todayKey);
       }
 
       // 直接入力された売り場を、そのフロアの売り場リストへ自動追加
@@ -582,9 +619,38 @@ export default function App() {
       {/* ===== 一覧 ===== */}
       {view === "list" && (
         <div>
+          {/* 日付の切り替え */}
+          <div style={s.dateBar}>
+            <button
+              style={s.dateArrow}
+              onClick={() => changeViewDate(shiftDateKey(viewDateKey, -1))}
+            >◀</button>
+
+            <div style={s.dateLabelWrap}>
+              <span style={s.dateLabel}>{formatDateKey(viewDateKey)}</span>
+              {isToday && <span style={s.dateTodayTag}>今日</span>}
+            </div>
+
+            <button
+              style={{ ...s.dateArrow, ...(isToday ? s.dateArrowDisabled : {}) }}
+              onClick={() => { if (!isToday) changeViewDate(shiftDateKey(viewDateKey, 1)); }}
+              disabled={isToday}
+            >▶</button>
+          </div>
+
+          {!isToday && (
+            <div style={s.backTodayWrap}>
+              <button style={s.backTodayBtn} onClick={() => changeViewDate(todayKey)}>
+                今日に戻る
+              </button>
+            </div>
+          )}
+
           {records.length > 0 && (
             <div style={s.summaryBar}>
-              <div style={s.summaryTitle}>📊 本日の合計</div>
+              <div style={s.summaryTitle}>
+                📊 {isToday ? "本日の合計" : `${formatDateKey(viewDateKey)} の合計`}
+              </div>
               <div style={s.summaryRow}>
                 <div style={s.summaryCard}>
                   <div style={s.summaryVendor}>🟠 浪速</div>
@@ -630,7 +696,11 @@ export default function App() {
 
           <div style={s.listOuter}>
             {Object.keys(groupedByFloor).length === 0 ? (
-              <div style={s.empty}>{records.length === 0 ? "まだ登録がありません" : "該当する受付がありません"}</div>
+              <div style={s.empty}>
+                {records.length === 0
+                  ? (isToday ? "まだ登録がありません" : "この日の登録はありません")
+                  : "該当する受付がありません"}
+              </div>
             ) : (
               Object.entries(groupedByFloor).map(([fl, recs]) => {
                 const undoneInFloor = recs.filter(r => !r.done).length;
@@ -835,6 +905,32 @@ const s = {
   badge: {
     position: "absolute", top: -4, right: -4, background: "#E53E3E",
     color: "#fff", borderRadius: 10, fontSize: 10, padding: "1px 5px", fontWeight: 700,
+  },
+
+  // 日付の切り替え
+  dateBar: {
+    display: "flex", alignItems: "center", justifyContent: "space-between",
+    background: "#fff", margin: "12px 12px 0", borderRadius: 12,
+    padding: "8px 10px", boxShadow: "0 1px 4px rgba(0,0,0,0.07)",
+  },
+  dateArrow: {
+    width: 40, height: 36, borderRadius: 8, background: "#EDF2F7",
+    border: "1.5px solid #CBD5E0", color: "#2D3748",
+    fontSize: 14, fontWeight: 700, cursor: "pointer", flexShrink: 0,
+  },
+  dateArrowDisabled: {
+    background: "#F7FAFC", color: "#CBD5E0", borderColor: "#E2E8F0", cursor: "not-allowed",
+  },
+  dateLabelWrap: { display: "flex", alignItems: "center", gap: 6 },
+  dateLabel: { fontSize: 16, fontWeight: 800, color: "#1A3A5C", letterSpacing: 0.5 },
+  dateTodayTag: {
+    background: "#1A3A5C", color: "#fff", borderRadius: 10,
+    padding: "1px 8px", fontSize: 10, fontWeight: 700,
+  },
+  backTodayWrap: { display: "flex", justifyContent: "center", marginTop: 8 },
+  backTodayBtn: {
+    background: "#EBF8FF", color: "#2B6CB0", border: "1.5px solid #BEE3F8",
+    borderRadius: 20, padding: "5px 18px", fontSize: 12, fontWeight: 700, cursor: "pointer",
   },
 
   summaryBar: {
