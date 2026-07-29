@@ -608,6 +608,9 @@ export default function App() {
           {editId !== null && (
             <button style={s.cancelBtn} onClick={resetForm}>キャンセル</button>
           )}
+
+          {/* 余白の配分：上1 / 下2 で、入力欄が上から約1/3の位置に来る */}
+          <div style={{ flex: "2 1 0", minHeight: 0 }} />
         </div>
       )}
 
