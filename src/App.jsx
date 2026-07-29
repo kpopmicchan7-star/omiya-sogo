@@ -21,13 +21,6 @@ const VENDORS = ["浪速", "佐川"];
 // コード側に既定値は持たない（誤って上書きしないため）。
 const EMPTY_SHOPS = FLOORS.reduce((acc, f) => { acc[f] = []; return acc; }, {});
 
-// 復元用：3Fの売り場（記録が残っていない分の補完）
-const RESTORE_3F = [
-  "ANAYI", "Theory", "HUMAN WOMAN", "特設会場", "イネド", "コムサプラチナ",
-  "エムズグレイシー", "ナチュラルミスト", "イーストボーイ", "ピンクハウス",
-  "ポロ ウィメンズ", "アンタイトル", "23区",
-];
-
 // ===== Firebase 接続設定 =====
 const firebaseConfig = {
   apiKey: "AIzaSyCPYJ63COhmJe3NOtdpomdgjRjGv411d7U",
@@ -338,64 +331,6 @@ export default function App() {
     setFilterFloor("ALL");
   };
 
-  // 過去の全記録から売り場リストを作り直す
-  const [restoreBusy, setRestoreBusy] = useState(false);
-  const [restoreMsg, setRestoreMsg] = useState("");
-
-  const restoreShopsFromRecords = async () => {
-    const ok = window.confirm(
-      "今の売り場リストを、過去の集荷記録から作り直した内容に置き換えます。\n\n" +
-      "・実際に登録したことのある売り場は復元されます\n" +
-      "・一度も使っていない売り場は復元されません\n\n" +
-      "実行しますか？"
-    );
-    if (!ok) return;
-
-    setRestoreBusy(true);
-    setRestoreMsg("");
-    try {
-      const snap = await getDocs(collection(db, RECORDS_COLLECTION));
-
-      // 階ごとに「売り場名 → 使った回数」を集計
-      const counts = {};
-      FLOORS.forEach(f => { counts[f] = {}; });
-
-      snap.docs.forEach(d => {
-        const r = d.data();
-        const fl = r.floor;
-        const name = (r.shopName || "").trim();
-        if (!fl || !name || !counts[fl]) return;
-        counts[fl][name] = (counts[fl][name] || 0) + 1;
-      });
-
-      // 3Fはスクリーンショットから復元した分を補う
-      RESTORE_3F.forEach(name => {
-        if (counts["3F"][name] === undefined) counts["3F"][name] = 0;
-      });
-
-      // よく使う順に並べる（同数なら名前順）
-      const rebuilt = {};
-      let total = 0;
-      FLOORS.forEach(f => {
-        const names = Object.keys(counts[f]).sort((a, b) => {
-          const diff = counts[f][b] - counts[f][a];
-          return diff !== 0 ? diff : a.localeCompare(b, "ja");
-        });
-        rebuilt[f] = names;
-        total += names.length;
-      });
-
-      await setDoc(doc(db, SHOPS_DOC_PATH[0], SHOPS_DOC_PATH[1]), { byFloor: rebuilt });
-
-      const floorsWithData = FLOORS.filter(f => rebuilt[f].length > 0).length;
-      setRestoreMsg(`${floorsWithData}フロア・合計${total}件の売り場を復元しました。`);
-    } catch (e) {
-      console.error("売り場リストの復元に失敗", e);
-      setRestoreMsg("復元に失敗しました。通信環境をご確認ください。");
-    } finally {
-      setRestoreBusy(false);
-    }
-  };
 
   const resetForm = () => {
     setFloor(""); setShopName(""); setShopManual("");
@@ -889,16 +824,6 @@ export default function App() {
           <div style={s.settingsTitle}>🏢 フロア別 売り場の設定</div>
           <div style={s.hint2}>階を選んで売り場を追加・削除できます（チーム全員にすぐ反映されます）</div>
 
-          <div style={s.restoreBox}>
-            <div style={s.restoreTitle}>🔧 過去の記録から復元</div>
-            <div style={s.restoreBody}>
-              売り場リストが初期状態に戻ってしまった場合に使います。過去の集荷記録に出てくる売り場を集めて、リストを作り直します。今のリストは置き換わります。
-            </div>
-            <button style={s.restoreBtn} onClick={restoreShopsFromRecords} disabled={restoreBusy}>
-              {restoreBusy ? "復元中…" : "過去の記録から作り直す"}
-            </button>
-            {restoreMsg && <div style={s.restoreMsg}>{restoreMsg}</div>}
-          </div>
 
           <div style={{ ...s.field, marginTop: 12 }}>
             <label style={s.label}>階を選択</label>
@@ -1136,18 +1061,6 @@ const s = {
   empty: { textAlign: "center", color: "#A0AEC0", marginTop: 60, fontSize: 15 },
   settingsTitle: { fontSize: 15, fontWeight: 700, color: "#1A3A5C", marginBottom: 2 },
 
-  // 売り場の復元
-  restoreBox: {
-    background: "#FFFAF0", border: "1.5px solid #FBD38D",
-    borderRadius: 10, padding: "12px 14px", marginTop: 12,
-  },
-  restoreTitle: { fontSize: 14, fontWeight: 700, color: "#C05621", marginBottom: 5 },
-  restoreBody: { fontSize: 12, color: "#744210", lineHeight: 1.7, marginBottom: 10 },
-  restoreBtn: {
-    width: "100%", background: "#C05621", color: "#fff", border: "none",
-    borderRadius: 8, padding: "11px 0", fontSize: 14, fontWeight: 700, cursor: "pointer",
-  },
-  restoreMsg: { fontSize: 12, color: "#744210", marginTop: 8, fontWeight: 600 },
 
   // 通知設定
   pushStatusOn: {
