@@ -513,7 +513,7 @@ export default function App() {
 
       {/* ===== 入力 ===== */}
       {view === "form" && (
-        <div style={s.card}>
+        <div style={{ ...s.card, flex: "1 1 auto" }}>
           {editId !== null && <div style={s.editBanner}>✏️ 編集中</div>}
 
           <div style={s.field}>
@@ -881,7 +881,10 @@ const s = {
 
   root: {
     fontFamily: "'Hiragino Kaku Gothic ProN', 'Noto Sans JP', sans-serif",
-    background: "#F0F4F8", minHeight: "100vh", maxWidth: 500, margin: "0 auto", paddingBottom: 40,
+    background: "#F0F4F8", maxWidth: 500, margin: "0 auto",
+    display: "flex", flexDirection: "column",
+    minHeight: "100dvh",
+    paddingBottom: "env(safe-area-inset-bottom, 0px)",
   },
   header: {
     background: "#1A3A5C", color: "#fff",
@@ -954,7 +957,7 @@ const s = {
     borderRadius: 10, fontSize: 10, padding: "1px 5px", fontWeight: 700, minWidth: 16, textAlign: "center",
   },
 
-  listOuter: { padding: "6px 12px 10px" },
+  listOuter: { padding: "6px 12px 24px" },
   floorGroup: { marginBottom: 16 },
   floorHeader: {
     display: "flex", justifyContent: "space-between", alignItems: "center",
